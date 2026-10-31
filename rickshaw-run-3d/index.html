@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Rickshaw Run 3D</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; overflow:hidden; }
+  body {
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    touch-action:none; user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent;
+  }
+  canvas { display:block; }
+  #hud { position:fixed; top:0; left:0; right:0; text-align:center; padding-top:16px; pointer-events:none; z-index:5; }
+  #score { font-size:54px; font-weight:900; color:#fff; text-shadow:0 2px 14px rgba(0,0,0,.55); line-height:1; }
+  #best { font-size:12px; letter-spacing:3px; color:rgba(255,255,255,.8); margin-top:4px; text-shadow:0 1px 6px rgba(0,0,0,.5); }
+  #previewTag {
+    position:fixed; top:12px; left:12px; z-index:7; pointer-events:none;
+    font-size:10px; letter-spacing:2px; color:#fff;
+    background:rgba(0,0,0,.45); padding:6px 10px; border-radius:20px;
+    border:1px solid rgba(255,255,255,.4);
+  }
+  #overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:6; pointer-events:none; }
+  #overlay .card { text-align:center; color:#fff; animation:pulse 1.6s ease-in-out infinite; padding:0 20px; }
+  #overlay h1 { font-size:32px; font-weight:900; letter-spacing:2px; text-shadow:0 2px 14px rgba(0,0,0,.6); }
+  #overlay p { margin-top:10px; font-size:14px; color:rgba(255,255,255,.9); letter-spacing:1px; text-shadow:0 1px 8px rgba(0,0,0,.5); }
+  #overlay .big { font-size:20px; font-weight:800; color:#fff; }
+  @keyframes pulse { 0%,100%{transform:scale(1);opacity:.92} 50%{transform:scale(1.05);opacity:1} }
+</style>
+</head>
+<body>
+<div id="previewTag">★ PREVIEW — Game Zone demo</div>
+<div id="hud"><div id="score">0</div><div id="best">BEST 0</div></div>
+<div id="overlay"><div class="card" id="overlayCard"><h1>🛺 TAP TO FLY</h1><p>Tap to flap. Dodge the pipes!</p></div></div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+let scene, camera, renderer;
+let rickshaw, rickshawY, vy;
+let pipes = [];
+let clouds = [];
+let dashes = [];
+let state = 'ready'; // ready | playing | over
+let score = 0;
+let best = parseInt(localStorage.getItem('rickshaw3d_best') || '0', 10);
+let speed = 7;
+let spawnTimer = 0;
+let audioCtx = null;
+const clock = new THREE.Clock();
+
+const REST_Y = 1.6;
+const GRAV = 26, JUMP = 9.2;
+const PIPE_GAP = 3.6, PIPE_W = 1.5;
+
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const overlay = document.getElementById('overlay');
+const card = document.getElementById('overlayCard');
+bestEl.textContent = 'BEST ' + best;
+
+init();
+
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x8ed6f2);
+  scene.fog = new THREE.Fog(0x8ed6f2, 35, 95);
+
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+  camera.position.set(-7.5, 4.2, 9.5);
+  camera.lookAt(3, 2.4, 0);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x88aa66, 1.0));
+  const dl = new THREE.DirectionalLight(0xffffff, 1.1);
+  dl.position.set(6, 14, 8);
+  scene.add(dl);
+
+  buildGround();
+  buildRickshaw();
+  buildClouds();
+
+  window.addEventListener('resize', onResize);
+  window.addEventListener('pointerdown', onTap);
+  window.addEventListener('keydown', (e) => { if (e.code === 'Space') onTap(); });
+  requestAnimationFrame(animate);
+}
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function mat(c) { return new THREE.MeshLambertMaterial({ color: c }); }
+
+function buildGround() {
+  const g = new THREE.Mesh(new THREE.PlaneGeometry(240, 60), mat(0x58b368));
+  g.rotation.x = -Math.PI / 2;
+  g.position.set(20, 0, 0);
+  scene.add(g);
+  // road
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(240, 5), mat(0x3d3d4a));
+  road.rotation.x = -Math.PI / 2;
+  road.position.set(20, 0.02, 0);
+  scene.add(road);
+  // dashes
+  for (let i = 0; i < 14; i++) {
+    const d = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.04, 0.28), mat(0xffffff));
+    d.position.set(-30 + i * 5, 0.05, 0);
+    scene.add(d);
+    dashes.push(d);
+  }
+}
+
+function buildRickshaw() {
+  rickshaw = new THREE.Group();
+  const yellow = mat(0xffc400), black = mat(0x1c1c22);
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.6, 1.1), yellow);
+  body.position.y = 0.35; rickshaw.add(body);
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.74, 0.22, 1.14), black);
+  stripe.position.y = 0.14; rickshaw.add(stripe);
+  // roof
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.12, 1.05), black);
+  roof.position.y = 1.28; rickshaw.add(roof);
+  for (const [px, pz] of [[-0.6, -0.45], [-0.6, 0.45], [0.6, -0.45], [0.6, 0.45]]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.62), black);
+    post.position.set(px, 0.95, pz); rickshaw.add(post);
+  }
+  // windshield
+  const shield = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.95, 0.5),
+    new THREE.MeshLambertMaterial({ color: 0xbfe9ff, transparent: true, opacity: 0.65 })
+  );
+  shield.position.set(0.78, 0.95, 0); shield.rotation.y = Math.PI / 2; shield.rotation.x = 0; shield.rotation.z = -0.18;
+  rickshaw.add(shield);
+  // wheels: 1 front, 2 rear
+  const wg = new THREE.CylinderGeometry(0.32, 0.32, 0.22, 18);
+  for (const [px, pz] of [[0.85, 0], [-0.6, -0.58], [-0.6, 0.58]]) {
+    const w = new THREE.Mesh(wg, black);
+    w.rotation.x = Math.PI / 2;
+    w.position.set(px, -0.28, pz);
+    rickshaw.add(w);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.24, 12), mat(0x888899));
+    hub.rotation.x = Math.PI / 2;
+    hub.position.set(px, -0.28, pz);
+    rickshaw.add(hub);
+  }
+  // headlight
+  const light = new THREE.Mesh(
+    new THREE.SphereGeometry(0.13, 12, 12),
+    new THREE.MeshBasicMaterial({ color: 0xfff2a8 })
+  );
+  light.position.set(0.88, 0.45, 0); rickshaw.add(light);
+  // back box (luggage)
+  const box = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.9), mat(0x8a5a2b));
+  box.position.set(-1.0, 0.35, 0); rickshaw.add(box);
+
+  rickshawY = REST_Y;
+  rickshaw.position.set(0, rickshawY, 0);
+  scene.add(rickshaw);
+  vy = 0;
+}
+
+function buildClouds() {
+  const cm = mat(0xffffff);
+  for (let i = 0; i < 7; i++) {
+    const grp = new THREE.Group();
+    const n = 2 + Math.floor(Math.random() * 3);
+    for (let j = 0; j < n; j++) {
+      const s = new THREE.Mesh(new THREE.SphereGeometry(0.9 + Math.random() * 0.9, 10, 10), cm);
+      s.position.set(j * 1.3 - n * 0.6, Math.random() * 0.5, Math.random() * 0.6 - 0.3);
+      grp.add(s);
+    }
+    grp.position.set(Math.random() * 70 - 10, 9 + Math.random() * 6, -10 - Math.random() * 14);
+    scene.add(grp);
+    clouds.push(grp);
+  }
+}
+
+function spawnPipe() {
+  const gapCenter = 2.6 + Math.random() * 3.6;
+  const gapTop = gapCenter + PIPE_GAP / 2;
+  const gapBottom = gapCenter - PIPE_GAP / 2;
+  const grp = new THREE.Group();
+  const pm = mat(0x2fa84f), rim = mat(0x1f7a38);
+  const topH = 14 - gapTop, botH = gapBottom;
+  const top = new THREE.Mesh(new THREE.BoxGeometry(PIPE_W, topH, 2.4), pm);
+  top.position.y = gapTop + topH / 2; grp.add(top);
+  const topRim = new THREE.Mesh(new THREE.BoxGeometry(PIPE_W + 0.35, 0.5, 2.75), rim);
+  topRim.position.y = gapTop + 0.25; grp.add(topRim);
+  const bot = new THREE.Mesh(new THREE.BoxGeometry(PIPE_W, botH, 2.4), pm);
+  bot.position.y = botH / 2; grp.add(bot);
+  const botRim = new THREE.Mesh(new THREE.BoxGeometry(PIPE_W + 0.35, 0.5, 2.75), rim);
+  botRim.position.y = gapBottom - 0.25; grp.add(botRim);
+  grp.position.x = 34;
+  scene.add(grp);
+  pipes.push({ grp, x: 34, gapTop, gapBottom, counted: false });
+}
+
+function onTap() {
+  ensureAudio();
+  if (state === 'ready') {
+    state = 'playing';
+    overlay.style.display = 'none';
+    flap();
+    return;
+  }
+  if (state === 'over') { resetGame(); state = 'playing'; overlay.style.display = 'none'; flap(); return; }
+  flap();
+}
+
+function flap() {
+  vy = JUMP;
+  blip(620);
+}
+
+function resetGame() {
+  for (const p of pipes) scene.remove(p.grp);
+  pipes = [];
+  rickshawY = REST_Y; vy = 0;
+  rickshaw.position.y = rickshawY; rickshaw.rotation.z = 0;
+  score = 0; speed = 7; spawnTimer = 0;
+  scoreEl.textContent = '0';
+}
+
+function gameOver() {
+  state = 'over';
+  buzz();
+  setTimeout(() => {
+    card.innerHTML = '<h1>💥 CRASH!</h1>' +
+      '<p class="big">Score ' + score + ' &nbsp;•&nbsp; Best ' + best + '</p>' +
+      '<p>TAP TO RIDE AGAIN</p>';
+    overlay.style.display = 'flex';
+  }, 500);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  // scroll world
+  const scroll = state === 'playing' ? speed * dt : speed * 0.25 * dt;
+  for (const d of dashes) { d.position.x -= scroll * 1.6; if (d.position.x < -32) d.position.x += 70; }
+  for (const c of clouds) { c.position.x -= dt * 0.7; if (c.position.x < -25) c.position.x = 65; }
+
+  if (state === 'playing') {
+    vy -= GRAV * dt;
+    rickshawY += vy * dt;
+    if (rickshawY > 9.5) { rickshawY = 9.5; vy = 0; }
+    if (rickshawY <= REST_Y - 0.65) { rickshawY = REST_Y - 0.65; gameOver(); }
+
+    rickshaw.position.y = rickshawY;
+    rickshaw.rotation.z = THREE.MathUtils.clamp(vy * 0.045, -0.5, 0.38);
+
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) { spawnPipe(); spawnTimer = 11 / speed; }
+
+    for (let i = pipes.length - 1; i >= 0; i--) {
+      const p = pipes[i];
+      p.x -= speed * dt;
+      p.grp.position.x = p.x;
+      if (!p.counted && p.x < -1.2) { p.counted = true; score++; scoreEl.textContent = score; ding(); speed = Math.min(speed + 0.12, 11); }
+      if (p.x < -14) { scene.remove(p.grp); pipes.splice(i, 1); continue; }
+      // collision
+      if (Math.abs(p.x) < 0.85 + PIPE_W / 2) {
+        if (rickshawY + 0.55 > p.gapTop || rickshawY - 0.55 < p.gapBottom) gameOver();
+      }
+    }
+    if (score > best) {
+      best = score;
+      try { localStorage.setItem('rickshaw3d_best', String(best)); } catch (e) {}
+      bestEl.textContent = 'BEST ' + best;
+    }
+  } else if (state === 'ready') {
+    rickshaw.position.y = REST_Y + Math.sin(performance.now() * 0.003) * 0.18;
+  }
+
+  renderer.render(scene, camera);
+}
+
+// sounds
+function ensureAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+function tone(freq, dur, type, vol) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(); o.stop(audioCtx.currentTime + dur);
+}
+function blip(f) { tone(f, 0.09, 'square', 0.07); }
+function ding() { tone(880, 0.12, 'sine', 0.14); setTimeout(() => tone(1320, 0.14, 'sine', 0.12), 70); }
+function buzz() { tone(130, 0.3, 'sawtooth', 0.12); }
+</script>
+</body>
+</html>

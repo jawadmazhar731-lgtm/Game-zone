@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Stack Tower 3D</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; overflow:hidden; }
+  body {
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    background:linear-gradient(180deg,#0f0c29 0%,#302b63 55%,#24243e 100%);
+    touch-action:none; user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent;
+  }
+  canvas { display:block; }
+  #hud { position:fixed; top:0; left:0; right:0; text-align:center; padding-top:16px; pointer-events:none; z-index:5; }
+  #score { font-size:54px; font-weight:900; color:#fff; text-shadow:0 2px 14px rgba(0,0,0,.55); line-height:1; }
+  #best { font-size:12px; letter-spacing:3px; color:rgba(255,255,255,.65); margin-top:4px; }
+  #previewTag {
+    position:fixed; top:12px; left:12px; z-index:7; pointer-events:none;
+    font-size:10px; letter-spacing:2px; color:#ffd9d4;
+    background:rgba(0,0,0,.45); padding:6px 10px; border-radius:20px;
+    border:1px solid rgba(255,34,17,.5);
+  }
+  #overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:6; pointer-events:none; }
+  #overlay .card { text-align:center; color:#fff; animation:pulse 1.6s ease-in-out infinite; padding:0 20px; }
+  #overlay h1 { font-size:32px; font-weight:900; letter-spacing:2px; text-shadow:0 2px 14px rgba(0,0,0,.6); }
+  #overlay p { margin-top:10px; font-size:14px; color:rgba(255,255,255,.78); letter-spacing:1px; }
+  #overlay .big { font-size:20px; font-weight:800; color:#fff; }
+  @keyframes pulse { 0%,100%{transform:scale(1);opacity:.92} 50%{transform:scale(1.05);opacity:1} }
+</style>
+</head>
+<body>
+<div id="previewTag">★ PREVIEW — Game Zone demo</div>
+<div id="hud"><div id="score">0</div><div id="best">BEST 0</div></div>
+<div id="overlay"><div class="card" id="overlayCard"><h1>TAP TO START</h1><p>Stack the blocks. Don't let them fall!</p></div></div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+const BOX_H = 1;
+let scene, camera, renderer, lookTarget;
+let stack = [];
+let mover = null;
+let nextAxis = 'x';
+let score = 0;
+let best = parseInt(localStorage.getItem('stack3d_best') || '0', 10);
+let state = 'ready'; // ready | playing | over
+let debris = [];
+let camY = 0;
+let audioCtx = null;
+const clock = new THREE.Clock();
+
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const overlay = document.getElementById('overlay');
+const card = document.getElementById('overlayCard');
+bestEl.textContent = 'BEST ' + best;
+
+init();
+
+function init() {
+  scene = new THREE.Scene();
+  const aspect = window.innerWidth / window.innerHeight;
+  const D = 7;
+  camera = new THREE.OrthographicCamera(-D * aspect, D * aspect, D, -D, 0.1, 100);
+  camera.position.set(9, 9, 9);
+  lookTarget = new THREE.Vector3(0, 0, 0);
+  camera.lookAt(lookTarget);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.0));
+  const dl = new THREE.DirectionalLight(0xffffff, 1.25);
+  dl.position.set(6, 12, 4);
+  scene.add(dl);
+
+  addBox(3, 3, 0, 0, 0); // base
+
+  window.addEventListener('resize', onResize);
+  window.addEventListener('pointerdown', onTap);
+  requestAnimationFrame(animate);
+}
+
+function onResize() {
+  const aspect = window.innerWidth / window.innerHeight;
+  const D = 7;
+  camera.left = -D * aspect; camera.right = D * aspect;
+  camera.top = D; camera.bottom = -D;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function boxColor(lvl) {
+  return new THREE.Color().setHSL((lvl * 0.045) % 1, 0.65, 0.55);
+}
+
+function makeMesh(sx, sz, y, color) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshLambertMaterial({ color })
+  );
+  mesh.scale.set(sx, BOX_H, sz);
+  mesh.position.y = y;
+  scene.add(mesh);
+  return mesh;
+}
+
+function addBox(sx, sz, x, z, lvl) {
+  const y = lvl * BOX_H + BOX_H / 2;
+  const mesh = makeMesh(sx, sz, y, boxColor(lvl));
+  mesh.position.x = x;
+  mesh.position.z = z;
+  const b = { mesh, sx, sz, lvl };
+  stack.push(b);
+  return b;
+}
+
+function spawnMover() {
+  const prev = stack[stack.length - 1];
+  const lvl = prev.lvl + 1;
+  const axis = nextAxis;
+  nextAxis = (axis === 'x') ? 'z' : 'x';
+  const sx = prev.sx, sz = prev.sz;
+  const y = lvl * BOX_H + BOX_H / 2;
+  const mesh = makeMesh(sx, sz, y, boxColor(lvl));
+  const center = axis === 'x' ? prev.mesh.position.x : prev.mesh.position.z;
+  if (axis === 'x') { mesh.position.x = center; mesh.position.z = prev.mesh.position.z; }
+  else { mesh.position.z = center; mesh.position.x = prev.mesh.position.x; }
+  const dir = Math.random() < 0.5 ? 1 : -1;
+  mesh.position[axis] = center + dir * 5.2;
+  const speed = Math.min(2.4 + lvl * 0.08, 5.4);
+  mover = { mesh, axis, dir, speed, sx, sz, lvl, center };
+}
+
+function onTap() {
+  ensureAudio();
+  if (state === 'ready') { startGame(); return; }
+  if (state === 'over') { resetGame(); startGame(); return; }
+  placeBlock();
+}
+
+function startGame() {
+  state = 'playing';
+  overlay.style.display = 'none';
+  spawnMover();
+}
+
+function placeBlock() {
+  const prev = stack[stack.length - 1];
+  const m = mover.mesh, axis = mover.axis;
+  const c = m.position[axis], p = prev.mesh.position[axis];
+  const cs = axis === 'x' ? mover.sx : mover.sz;
+  const ps = axis === 'x' ? prev.sx : prev.sz;
+  const cMin = c - cs / 2, cMax = c + cs / 2;
+  const pMin = p - ps / 2, pMax = p + ps / 2;
+  const oMin = Math.max(cMin, pMin), oMax = Math.min(cMax, pMax);
+  const overlap = oMax - oMin;
+
+  if (Math.abs(c - p) < 0.09) { // perfect snap
+    m.position[axis] = p;
+    finishPlace(mover.sx, mover.sz, p, mover.lvl, axis);
+    blip(520 + mover.lvl * 20);
+    return;
+  }
+  if (overlap <= 0.02) { gameOver(); return; }
+
+  if (cMin < oMin - 0.001) addDebris(cMin, oMin, m, axis);
+  if (cMax > oMax + 0.001) addDebris(oMax, cMax, m, axis);
+
+  const nsx = axis === 'x' ? overlap : mover.sx;
+  const nsz = axis === 'z' ? overlap : mover.sz;
+  finishPlace(nsx, nsz, (oMin + oMax) / 2, mover.lvl, axis);
+  blip(520 + mover.lvl * 20);
+}
+
+function finishPlace(sx, sz, apos, lvl, axis) {
+  const prev = stack[stack.length - 1];
+  const m = mover.mesh;
+  m.scale.set(sx, BOX_H, sz);
+  m.position[axis] = apos;
+  if (axis === 'x') m.position.z = prev.mesh.position.z;
+  else m.position.x = prev.mesh.position.x;
+  stack.push({ mesh: m, sx, sz, lvl });
+  mover = null;
+  score++;
+  scoreEl.textContent = score;
+  if (score > best) {
+    best = score;
+    try { localStorage.setItem('stack3d_best', String(best)); } catch (e) {}
+    bestEl.textContent = 'BEST ' + best;
+  }
+  spawnMover();
+}
+
+function addDebris(dMin, dMax, mesh, axis) {
+  const size = dMax - dMin;
+  const dm = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    mesh.material.clone()
+  );
+  dm.scale.set(
+    axis === 'x' ? size : mesh.scale.x,
+    BOX_H,
+    axis === 'z' ? size : mesh.scale.z
+  );
+  dm.position.copy(mesh.position);
+  dm.position[axis] = (dMin + dMax) / 2;
+  scene.add(dm);
+  const outDir = dm.position[axis] >= (axis === 'x' ? mesh.position.x : mesh.position.z) ? 1 : -1;
+  debris.push({
+    mesh: dm,
+    vel: new THREE.Vector3(
+      axis === 'x' ? outDir * 2.4 : (Math.random() - 0.5) * 1.5,
+      1.2,
+      axis === 'z' ? outDir * 2.4 : (Math.random() - 0.5) * 1.5
+    ),
+    ang: new THREE.Vector3(Math.random() * 3, Math.random() * 3, Math.random() * 3)
+  });
+}
+
+function gameOver() {
+  const m = mover.mesh, axis = mover.axis;
+  const outDir = m.position[axis] >= 0 ? 1 : -1;
+  debris.push({
+    mesh: m,
+    vel: new THREE.Vector3(
+      axis === 'x' ? outDir * 2 : (Math.random() - 0.5),
+      2,
+      axis === 'z' ? outDir * 2 : (Math.random() - 0.5)
+    ),
+    ang: new THREE.Vector3(2, 3, 1)
+  });
+  mover = null;
+  state = 'over';
+  buzz();
+  setTimeout(() => {
+    card.innerHTML = '<h1>GAME OVER</h1>' +
+      '<p class="big">Score ' + score + ' &nbsp;•&nbsp; Best ' + best + '</p>' +
+      '<p>TAP TO RETRY</p>';
+    overlay.style.display = 'flex';
+  }, 650);
+}
+
+function resetGame() {
+  for (const b of stack) scene.remove(b.mesh);
+  for (const d of debris) scene.remove(d.mesh);
+  debris = []; stack = []; mover = null;
+  score = 0; nextAxis = 'x';
+  scoreEl.textContent = '0';
+  addBox(3, 3, 0, 0, 0);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  if (mover && state === 'playing') {
+    const ax = mover.axis;
+    let v = mover.mesh.position[ax] + mover.dir * mover.speed * dt;
+    if (v > mover.center + 5.2) { v = mover.center + 5.2; mover.dir = -1; }
+    if (v < mover.center - 5.2) { v = mover.center - 5.2; mover.dir = 1; }
+    mover.mesh.position[ax] = v;
+  }
+
+  for (let i = debris.length - 1; i >= 0; i--) {
+    const d = debris[i];
+    d.vel.y -= 12 * dt;
+    d.mesh.position.addScaledVector(d.vel, dt);
+    d.mesh.rotation.x += d.ang.x * dt;
+    d.mesh.rotation.y += d.ang.y * dt;
+    d.mesh.rotation.z += d.ang.z * dt;
+    if (d.mesh.position.y < lookTarget.y - 18) {
+      scene.remove(d.mesh);
+      debris.splice(i, 1);
+    }
+  }
+
+  const targetY = Math.max(0, stack.length - 4) * BOX_H;
+  const k = Math.min(1, dt * 3);
+  camY += (targetY - camY) * k;
+  camera.position.set(9, 9 + camY, 9);
+  lookTarget.y += (targetY - lookTarget.y) * k;
+  camera.lookAt(lookTarget);
+
+  renderer.render(scene, camera);
+}
+
+// tiny synth sounds, no files needed
+function ensureAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+function tone(freq, dur, type, vol) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(); o.stop(audioCtx.currentTime + dur);
+}
+function blip(f) { tone(f, 0.12, 'sine', 0.16); }
+function buzz() { tone(140, 0.28, 'sawtooth', 0.12); }
+</script>
+</body>
+</html>

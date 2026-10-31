@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Reaction King 3D</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; overflow:hidden; }
+  body {
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    background:#0b0b14;
+    touch-action:none; user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent;
+  }
+  canvas { display:block; }
+  #hud { position:fixed; top:0; left:0; right:0; text-align:center; padding-top:16px; pointer-events:none; z-index:5; }
+  #round { font-size:14px; letter-spacing:3px; color:rgba(255,255,255,.65); }
+  #last { font-size:44px; font-weight:900; color:#fff; text-shadow:0 2px 14px rgba(0,0,0,.6); line-height:1.15; }
+  #best { font-size:12px; letter-spacing:3px; color:rgba(255,255,255,.55); margin-top:4px; }
+  #previewTag {
+    position:fixed; top:12px; left:12px; z-index:7; pointer-events:none;
+    font-size:10px; letter-spacing:2px; color:#fff;
+    background:rgba(0,0,0,.45); padding:6px 10px; border-radius:20px;
+    border:1px solid rgba(255,255,255,.35);
+  }
+  #overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:6; pointer-events:none; }
+  #overlay .card { text-align:center; color:#fff; padding:0 24px; animation:pulse 1.6s ease-in-out infinite; }
+  #overlay h1 { font-size:30px; font-weight:900; letter-spacing:2px; text-shadow:0 2px 14px rgba(0,0,0,.6); }
+  #overlay p { margin-top:10px; font-size:14px; color:rgba(255,255,255,.8); letter-spacing:1px; line-height:1.7; }
+  #overlay .big { font-size:22px; font-weight:800; color:#fff; }
+  #overlay .green { color:#4dff7c; }
+  #overlay .red { color:#ff6b6b; }
+  @keyframes pulse { 0%,100%{transform:scale(1);opacity:.92} 50%{transform:scale(1.05);opacity:1} }
+</style>
+</head>
+<body>
+<div id="previewTag">★ PREVIEW — Game Zone demo</div>
+<div id="hud">
+  <div id="round">ROUND - / 5</div>
+  <div id="last">-- ms</div>
+  <div id="best">BEST AVG --</div>
+</div>
+<div id="overlay"><div class="card" id="overlayCard"><h1>⚡ TAP TO START</h1><p>Wait for GREEN, then tap as fast as you can!<br>5 rounds. Tap red = foul.</p></div></div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+const ROUNDS = 5;
+let scene, camera, renderer, cube, ring, glow;
+let state = 'idle'; // idle | waiting | go | result | foul | done
+let times = [];
+let goTime = 0;
+let waitTimer = null;
+let pulseT = 0;
+let audioCtx = null;
+const clock = new THREE.Clock();
+
+const roundEl = document.getElementById('round');
+const lastEl = document.getElementById('last');
+const bestEl = document.getElementById('best');
+const overlay = document.getElementById('overlay');
+const card = document.getElementById('overlayCard');
+
+let bestAvg = parseFloat(localStorage.getItem('reaction3d_best') || '0');
+if (bestAvg > 0) bestEl.textContent = 'BEST AVG ' + Math.round(bestAvg) + ' MS';
+
+init();
+
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b0b14);
+  scene.fog = new THREE.Fog(0x0b0b14, 10, 26);
+
+  camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(0, 1.4, 8);
+  camera.lookAt(0, 0.4, 0);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+  glow = new THREE.PointLight(0xff2211, 60, 30);
+  glow.position.set(0, 1, 4);
+  scene.add(glow);
+
+  cube = new THREE.Mesh(
+    new THREE.BoxGeometry(2.6, 2.6, 2.6),
+    new THREE.MeshStandardMaterial({ color: 0x181820, emissive: 0xff2211, emissiveIntensity: 0.9, roughness: 0.35, metalness: 0.4 })
+  );
+  cube.position.y = 0.4;
+  scene.add(cube);
+
+  ring = new THREE.Mesh(
+    new THREE.TorusGeometry(2.6, 0.09, 12, 60),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 })
+  );
+  ring.position.y = 0.4;
+  ring.rotation.x = Math.PI / 2.4;
+  scene.add(ring);
+
+  // floor grid glow
+  const grid = new THREE.GridHelper(30, 30, 0x333355, 0x1a1a2e);
+  grid.position.y = -1.6;
+  scene.add(grid);
+
+  window.addEventListener('resize', onResize);
+  window.addEventListener('pointerdown', onTap);
+  window.addEventListener('keydown', (e) => { if (e.code === 'Space') onTap(); });
+  requestAnimationFrame(animate);
+}
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function setMood(colorHex, intensity) {
+  cube.material.emissive.setHex(colorHex);
+  cube.material.emissiveIntensity = intensity;
+  glow.color.setHex(colorHex);
+}
+
+function show(html) {
+  card.innerHTML = html;
+  overlay.style.display = 'flex';
+}
+function hide() { overlay.style.display = 'none'; }
+
+function onTap() {
+  ensureAudio();
+  if (state === 'idle' || state === 'done') { times = []; updateHud(); startRound(); return; }
+  if (state === 'waiting') { foul(); return; }
+  if (state === 'foul') { startRound(); return; }
+  if (state === 'go') { hit(); return; }
+  if (state === 'result') { startRound(); return; }
+}
+
+function startRound() {
+  state = 'waiting';
+  setMood(0xff2211, 1.0);
+  pulseT = 0;
+  show('<h1 class="red">WAIT FOR IT…</h1><p>Don\'t tap yet. Green is coming.</p>');
+  updateHud();
+  const delay = 1400 + Math.random() * 2600;
+  waitTimer = setTimeout(goGreen, delay);
+}
+
+function goGreen() {
+  state = 'go';
+  setMood(0x22ff66, 1.6);
+  pulseT = 0.0001; // trigger pop
+  goTime = performance.now();
+  show('<h1 class="green">TAP NOW!</h1>');
+  blip(880);
+}
+
+function hit() {
+  const ms = Math.round(performance.now() - goTime);
+  times.push(ms);
+  state = 'result';
+  setMood(0x2288ff, 0.9);
+  lastEl.textContent = ms + ' ms';
+  blip(520);
+  if (times.length >= ROUNDS) {
+    finishGame();
+  } else {
+    show('<h1 class="big">' + ms + ' ms</h1><p>Round ' + times.length + ' / ' + ROUNDS + ' done.<br>TAP FOR NEXT ROUND</p>');
+  }
+  updateHud();
+}
+
+function foul() {
+  clearTimeout(waitTimer);
+  state = 'foul';
+  setMood(0xff8800, 1.0);
+  buzz();
+  show('<h1 class="red">TOO EARLY!</h1><p>That was a foul — wait for green.<br>TAP TO RETRY THIS ROUND</p>');
+}
+
+function finishGame() {
+  state = 'done';
+  const avg = Math.round(times.reduce((a, b) => a + b, 0) / times.length);
+  const bestT = Math.min(...times);
+  let newBest = false;
+  if (bestAvg === 0 || avg < bestAvg) {
+    bestAvg = avg; newBest = true;
+    try { localStorage.setItem('reaction3d_best', String(avg)); } catch (e) {}
+  }
+  setMood(0xffd166, 1.1);
+  fanfare();
+  show('<h1>⚡ RESULTS</h1>' +
+    '<p class="big">Average ' + avg + ' ms</p>' +
+    '<p>Fastest tap ' + bestT + ' ms' + (newBest ? '<br><span class="green">★ NEW BEST AVERAGE! ★</span>' : '<br>Best average ' + Math.round(bestAvg) + ' ms') + '</p>' +
+    '<p>TAP TO PLAY AGAIN</p>');
+  bestEl.textContent = 'BEST AVG ' + Math.round(bestAvg) + ' MS';
+  updateHud();
+}
+
+function updateHud() {
+  roundEl.textContent = 'ROUND ' + Math.min(times.length + 1, ROUNDS) + ' / ' + ROUNDS;
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  cube.rotation.y += dt * 0.5;
+  cube.rotation.x += dt * 0.18;
+  ring.rotation.z -= dt * 0.7;
+  // pop effect on green
+  if (pulseT > 0) {
+    pulseT += dt;
+    const s = 1 + Math.sin(Math.min(pulseT, 0.45) / 0.45 * Math.PI) * 0.22;
+    cube.scale.set(s, s, s);
+    if (pulseT > 0.5) { pulseT = 0; cube.scale.set(1, 1, 1); }
+  }
+  // breathing glow while waiting
+  if (state === 'waiting') {
+    const b = 0.85 + Math.sin(performance.now() * 0.008) * 0.25;
+    cube.material.emissiveIntensity = b;
+  }
+  renderer.render(scene, camera);
+}
+
+// sounds
+function ensureAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+function tone(freq, dur, type, vol, when) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime + (when || 0);
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(t); o.stop(t + dur);
+}
+function blip(f) { tone(f, 0.1, 'sine', 0.15); }
+function buzz() { tone(150, 0.25, 'sawtooth', 0.12); }
+function fanfare() { tone(660, 0.12, 'sine', 0.14); tone(880, 0.12, 'sine', 0.14, 0.12); tone(1320, 0.2, 'sine', 0.14, 0.24); }
+</script>
+</body>
+</html>

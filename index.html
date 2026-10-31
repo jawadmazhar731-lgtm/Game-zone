@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Game Zone</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { min-height:100%; }
+  body {
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    background:linear-gradient(180deg,#0f0c29 0%,#1d1b4b 60%,#12122b 100%);
+    color:#fff; display:flex; flex-direction:column; align-items:center;
+    padding:34px 18px 40px; user-select:none; -webkit-user-select:none;
+  }
+  #previewTag {
+    position:fixed; top:12px; left:12px; z-index:7; pointer-events:none;
+    font-size:10px; letter-spacing:2px; color:#ffd9d4;
+    background:rgba(0,0,0,.45); padding:6px 10px; border-radius:20px;
+    border:1px solid rgba(255,34,17,.5);
+  }
+  h1 { font-size:40px; font-weight:900; letter-spacing:2px; margin-top:26px; text-align:center; }
+  h1 span { color:#ff5040; }
+  #sub { margin-top:8px; font-size:13px; letter-spacing:3px; color:rgba(255,255,255,.6); text-align:center; }
+  #games { margin-top:30px; width:100%; max-width:420px; display:flex; flex-direction:column; gap:16px; }
+  .card {
+    display:flex; align-items:center; gap:16px; text-decoration:none; color:#fff;
+    background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12);
+    border-radius:18px; padding:18px;
+    transition:transform .15s ease, background .15s ease;
+  }
+  .card:active { transform:scale(.97); background:rgba(255,255,255,.1); }
+  .emoji { font-size:44px; width:64px; height:64px; display:flex; align-items:center; justify-content:center;
+    background:rgba(0,0,0,.35); border-radius:16px; flex-shrink:0; }
+  .info h2 { font-size:19px; font-weight:800; }
+  .info p { font-size:13px; color:rgba(255,255,255,.65); margin-top:4px; line-height:1.5; }
+  .play {
+    margin-left:auto; flex-shrink:0; font-size:13px; font-weight:800; letter-spacing:1px;
+    background:#ff2211; color:#fff; border:none; border-radius:999px; padding:10px 20px;
+  }
+  #foot { margin-top:28px; font-size:11px; letter-spacing:2px; color:rgba(255,255,255,.35); text-align:center; }
+</style>
+</head>
+<body>
+<div id="previewTag">★ PREVIEW — Game Zone demo</div>
+<h1>GAME <span>ZONE</span></h1>
+<div id="sub">3D MINI GAMES • ONE TAP TO PLAY</div>
+<div id="games">
+  <a class="card" href="stack-tower-3d/">
+    <div class="emoji">🗼</div>
+    <div class="info"><h2>Stack Tower 3D</h2><p>Drop the sliding blocks. Build the tallest tower — one tap at a time.</p></div>
+    <span class="play">PLAY</span>
+  </a>
+  <a class="card" href="rickshaw-run-3d/">
+    <div class="emoji">🛺</div>
+    <div class="info"><h2>Rickshaw Run 3D</h2><p>Desi Flappy! Tap to fly the rickshaw through the pipes.</p></div>
+    <span class="play">PLAY</span>
+  </a>
+  <a class="card" href="reaction-king-3d/">
+    <div class="emoji">⚡</div>
+    <div class="info"><h2>Reaction King 3D</h2><p>Wait for green, tap lightning-fast. 5 rounds — prove you're fastest.</p></div>
+    <span class="play">PLAY</span>
+  </a>
+</div>
+<div id="foot">MORE GAMES COMING SOON</div>
+</body>
+</html>
