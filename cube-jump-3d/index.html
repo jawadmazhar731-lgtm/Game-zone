@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Cube Jump 3D</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; overflow:hidden; }
+  body {
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    background:linear-gradient(180deg,#0b3d4f 0%,#0e6b7a 55%,#083344 100%);
+    touch-action:none; user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent;
+  }
+  canvas { display:block; }
+  #hud { position:fixed; top:0; left:0; right:0; text-align:center; padding-top:16px; pointer-events:none; z-index:5; }
+  #score { font-size:54px; font-weight:900; color:#fff; text-shadow:0 2px 14px rgba(0,0,0,.55); line-height:1; }
+  #best { font-size:12px; letter-spacing:3px; color:rgba(255,255,255,.65); margin-top:4px; }
+  #previewTag {
+    position:fixed; top:12px; left:12px; z-index:7; pointer-events:none;
+    font-size:10px; letter-spacing:2px; color:#ffd9d4;
+    background:rgba(0,0,0,.45); padding:6px 10px; border-radius:20px;
+    border:1px solid rgba(255,34,17,.5);
+  }
+  #powerWrap {
+    position:fixed; bottom:34px; left:50%; transform:translateX(-50%); z-index:5; pointer-events:none;
+    width:min(70vw,320px); height:12px; border-radius:999px; background:rgba(0,0,0,.4);
+    border:1px solid rgba(255,255,255,.25); overflow:hidden; opacity:0; transition:opacity .15s;
+  }
+  #powerWrap.on { opacity:1; }
+  #powerBar { height:100%; width:0%; border-radius:999px; background:linear-gradient(90deg,#4ade80,#facc15,#ef4444); }
+  #overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:6; pointer-events:none; }
+  #overlay .card { text-align:center; color:#fff; animation:pulse 1.6s ease-in-out infinite; padding:0 20px; }
+  #overlay h1 { font-size:32px; font-weight:900; letter-spacing:2px; text-shadow:0 2px 14px rgba(0,0,0,.6); }
+  #overlay p { margin-top:10px; font-size:14px; color:rgba(255,255,255,.78); letter-spacing:1px; }
+  @keyframes pulse { 0%,100%{transform:scale(1);opacity:.92} 50%{transform:scale(1.05);opacity:1} }
+</style>
+</head>
+<body>
+<div id="previewTag">★ PREVIEW — Game Zone demo</div>
+<div id="hud"><div id="score">0</div><div id="best">BEST 0</div></div>
+<div id="powerWrap"><div id="powerBar"></div></div>
+<div id="overlay"><div class="card" id="overlayCard"><h1>TAP TO START</h1><p>Hold to charge, release to jump!</p></div></div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+const GRAV = 22, CUBE = 0.8, TOP_Y = CUBE / 2;
+let scene, camera, renderer, cube;
+let pillars = [], dots = [];
+let state = 'ready'; // ready | idle | charging | flying | over
+let score = 0, best = parseInt(localStorage.getItem('jump3d_best') || '0', 10);
+let power = 0, chargeDir = 1, vel = new THREE.Vector3();
+let camX = 0, audioCtx = null;
+const clock = new THREE.Clock();
+
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const overlay = document.getElementById('overlay');
+const card = document.getElementById('overlayCard');
+const powerWrap = document.getElementById('powerWrap');
+const powerBar = document.getElementById('powerBar');
+bestEl.textContent = 'BEST ' + best;
+
+init();
+
+function init() {
+  scene = new THREE.Scene();
+  const aspect = window.innerWidth / window.innerHeight;
+  const D = 7;
+  camera = new THREE.OrthographicCamera(-D * aspect, D * aspect, D, -D, 0.1, 100);
+  camera.position.set(8, 7, 10);
+  camera.lookAt(0, 0, 0);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x1a4a5a, 1.0));
+  const dl = new THREE.DirectionalLight(0xffffff, 1.2);
+  dl.position.set(6, 10, 4);
+  scene.add(dl);
+
+  cube = new THREE.Mesh(
+    new THREE.BoxGeometry(CUBE, CUBE, CUBE),
+    new THREE.MeshStandardMaterial({ color: 0x222831, roughness: 0.35, metalness: 0.25 })
+  );
+  scene.add(cube);
+
+  const dotGeo = new THREE.SphereGeometry(0.09, 8, 8);
+  const dotMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 });
+  for (let i = 0; i < 14; i++) {
+    const d = new THREE.Mesh(dotGeo, dotMat);
+    d.visible = false;
+    scene.add(d);
+    dots.push(d);
+  }
+
+  reset();
+  animate();
+
+  window.addEventListener('pointerdown', onDown);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('resize', onResize);
+}
+
+function pastel(i) {
+  const hues = [0.52, 0.0, 0.08, 0.58, 0.13];
+  return new THREE.Color().setHSL(hues[i % hues.length], 0.55, 0.72);
+}
+
+function addPillar(x, w) {
+  const h = 3 + Math.random() * 3;
+  const m = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h, 2.2),
+    new THREE.MeshStandardMaterial({ color: pastel(pillars.length), roughness: 0.6 })
+  );
+  m.position.set(x, -h / 2, 0);
+  scene.add(m);
+  pillars.push({ mesh: m, x: x, w: w });
+}
+
+function reset() {
+  for (const p of pillars) scene.remove(p.mesh);
+  pillars = [];
+  score = 0; power = 0;
+  scoreEl.textContent = '0';
+  addPillar(0, 2.2);
+  addPillar(3.4, 1.8);
+  cube.position.set(0, TOP_Y, 0);
+  cube.scale.set(1, 1, 1);
+  camX = 0;
+  hideDots();
+  powerWrap.classList.remove('on');
+}
+
+function startGame() {
+  reset();
+  state = 'idle';
+  overlay.style.display = 'none';
+}
+
+function gameOver() {
+  state = 'over';
+  if (score > best) { best = score; localStorage.setItem('jump3d_best', String(best)); }
+  bestEl.textContent = 'BEST ' + best;
+  hideDots();
+  powerWrap.classList.remove('on');
+  card.innerHTML = '<h1>GAME OVER</h1><p>Score: ' + score + ' &nbsp;•&nbsp; Best: ' + best + '<br>TAP TO RETRY</p>';
+  overlay.style.display = 'flex';
+  beep(160, 0.35, 'sawtooth');
+}
+
+function onDown() {
+  ensureAudio();
+  if (state === 'ready' || state === 'over') { startGame(); return; }
+  if (state === 'idle') {
+    state = 'charging';
+    power = 0;
+    powerWrap.classList.add('on');
+  }
+}
+
+function onUp() {
+  if (state !== 'charging') return;
+  state = 'flying';
+  powerWrap.classList.remove('on');
+  hideDots();
+  cube.scale.set(1, 1, 1);
+  const vx = 3 + power * 7;
+  const vy = 8 + power * 4;
+  vel.set(vx, vy, 0);
+  beep(300 + power * 500, 0.18, 'square');
+}
+
+function jumpPhysics(p) {
+  return { vx: 3 + p * 7, vy: 8 + p * 4 };
+}
+
+function showDots() {
+  const { vx, vy } = jumpPhysics(power);
+  let px = cube.position.x, py = cube.position.y;
+  let qx = vx, qy = vy;
+  const dt = 0.09;
+  for (let i = 0; i < dots.length; i++) {
+    qy -= GRAV * dt;
+    px += qx * dt; py += qy * dt;
+    dots[i].position.set(px, py, 0);
+    dots[i].visible = py > -1;
+  }
+}
+
+function hideDots() { for (const d of dots) d.visible = false; }
+
+function update(dt) {
+  if (state === 'charging') {
+    power = Math.min(1, power + dt / 1.1);
+    powerBar.style.width = (power * 100) + '%';
+    cube.scale.set(1 + power * 0.25, 1 - power * 0.35, 1 + power * 0.25);
+    showDots();
+  } else if (state === 'flying') {
+    vel.y -= GRAV * dt;
+    cube.position.x += vel.x * dt;
+    cube.position.y += vel.y * dt;
+    cube.rotation.z -= dt * 3;
+    const next = pillars[1];
+    if (vel.y < 0 && cube.position.y <= TOP_Y + 0.05 && next &&
+        Math.abs(cube.position.x - next.x) <= next.w / 2) {
+      // landed!
+      cube.position.set(next.x, TOP_Y, 0);
+      cube.rotation.z = 0;
+      score++;
+      scoreEl.textContent = String(score);
+      beep(520, 0.12, 'sine');
+      const old = pillars.shift();
+      scene.remove(old.mesh);
+      const gap = 2.4 + Math.random() * 2.4;
+      addPillar(next.x + gap, 1.4 + Math.random() * 0.8);
+      state = 'idle';
+    } else if (cube.position.y < -7) {
+      gameOver();
+    }
+  }
+  // camera follows
+  const targetX = cube.position.x - 1.5;
+  camX += (targetX - camX) * Math.min(1, dt * 4);
+  camera.position.x = camX + 8;
+  camera.lookAt(camX, 0.5, 0);
+  // drop pillars far behind
+  while (pillars.length > 2 && pillars[0].x < camX - 9) {
+    const old = pillars.shift();
+    scene.remove(old.mesh);
+  }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  update(dt);
+  renderer.render(scene, camera);
+}
+
+function onResize() {
+  const aspect = window.innerWidth / window.innerHeight;
+  const D = 7;
+  camera.left = -D * aspect; camera.right = D * aspect;
+  camera.top = D; camera.bottom = -D;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function ensureAudio() {
+  if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function beep(freq, dur, type) {
+  if (!audioCtx) return;
+  try {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.18, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + dur);
+  } catch (e) {}
+}
+</script>
+</body>
+</html>
